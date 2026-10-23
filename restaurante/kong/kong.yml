@@ -1,0 +1,32 @@
+# API Gateway (Kong OSS, modo DB-less): enruta por prefijo hacia cada microservicio.
+_format_version: "3.0"
+
+services:
+  - name: usuarios
+    url: http://usuarios:8000
+    routes:
+      - name: ruta-usuarios
+        paths: [/usuarios]
+        strip_path: false
+
+  - name: productos
+    url: http://productos:8000
+    routes:
+      - name: ruta-productos
+        paths: [/productos]
+        strip_path: false
+
+  - name: pedidos
+    url: http://pedidos:8000
+    routes:
+      - name: ruta-pedidos
+        paths: [/pedidos]
+        strip_path: false
+
+# Límite de tráfico por cliente (la IP real llega en X-Real-IP, ver KONG_REAL_IP_HEADER).
+plugins:
+  - name: rate-limiting
+    config:
+      minute: 6000
+      policy: local
+      limit_by: ip

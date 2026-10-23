@@ -1,0 +1,136 @@
+# Un solo comando levanta toda la arquitectura:   docker compose up --build
+# (antes, una vez:  cp .env.example .env)
+#
+# Internet → Nginx (puerto 80) → Kong → usuarios | productos | pedidos → una BD PostgreSQL por servicio
+# Solo Nginx publica un puerto. Todo lo demás vive en la red privada (internal: true).
+
+x-servicio: &servicio
+  restart: unless-stopped
+  networks: [privada]
+
+services:
+  # ---------- entrada ----------
+  nginx:
+    image: nginx:alpine
+    ports: ["80:80"]
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - kong
+    restart: unless-stopped
+    networks: [publica, privada]
+
+  kong:
+    image: kong:3
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong/kong.yml
+      KONG_PROXY_LISTEN: "0.0.0.0:8000"
+      KONG_ADMIN_LISTEN: "off"
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      # La IP real del cliente la envía Nginx en X-Real-IP (para limitar tráfico por cliente).
+      KONG_REAL_IP_HEADER: X-Real-IP
+      KONG_TRUSTED_IPS: "0.0.0.0/0,::/0"
+    volumes:
+      - ./kong/kong.yml:/kong/kong.yml:ro
+    depends_on:
+      - usuarios
+      - productos
+      - pedidos
+    <<: *servicio
+
+  # ---------- microservicios ----------
+  usuarios:
+    build: ./usuarios
+    environment:
+      DATABASE_URL: postgresql+psycopg2://usuarios:${DB_USUARIOS_PASSWORD:?Falta DB_USUARIOS_PASSWORD (copie .env.example a .env)}@db-usuarios:5432/usuarios
+      JWT_SECRET: ${JWT_SECRET:?Falta JWT_SECRET (copie .env.example a .env)}
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-60}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?Falta ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Falta ADMIN_PASSWORD}
+    depends_on:
+      db-usuarios:
+        condition: service_healthy
+    <<: *servicio
+
+  productos:
+    build: ./productos
+    environment:
+      DATABASE_URL: postgresql+psycopg2://productos:${DB_PRODUCTOS_PASSWORD:?Falta DB_PRODUCTOS_PASSWORD}@db-productos:5432/productos
+      JWT_SECRET: ${JWT_SECRET:?Falta JWT_SECRET}
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?Falta SERVICE_TOKEN}
+    depends_on:
+      db-productos:
+        condition: service_healthy
+    <<: *servicio
+
+  pedidos:
+    build: ./pedidos
+    environment:
+      DATABASE_URL: postgresql+psycopg2://pedidos:${DB_PEDIDOS_PASSWORD:?Falta DB_PEDIDOS_PASSWORD}@db-pedidos:5432/pedidos
+      JWT_SECRET: ${JWT_SECRET:?Falta JWT_SECRET}
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?Falta SERVICE_TOKEN}
+      PRODUCTOS_URL: http://productos:8000
+    depends_on:
+      db-pedidos:
+        condition: service_healthy
+      productos:
+        condition: service_started
+    <<: *servicio
+
+  # ---------- bases de datos (una por servicio, sin puertos publicados) ----------
+  db-usuarios:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: usuarios
+      POSTGRES_PASSWORD: ${DB_USUARIOS_PASSWORD:?Falta DB_USUARIOS_PASSWORD}
+      POSTGRES_DB: usuarios
+    volumes:
+      - datos-usuarios:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U usuarios -d usuarios"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    <<: *servicio
+
+  db-productos:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: productos
+      POSTGRES_PASSWORD: ${DB_PRODUCTOS_PASSWORD:?Falta DB_PRODUCTOS_PASSWORD}
+      POSTGRES_DB: productos
+    volumes:
+      - datos-productos:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U productos -d productos"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    <<: *servicio
+
+  db-pedidos:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: pedidos
+      POSTGRES_PASSWORD: ${DB_PEDIDOS_PASSWORD:?Falta DB_PEDIDOS_PASSWORD}
+      POSTGRES_DB: pedidos
+    volumes:
+      - datos-pedidos:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pedidos -d pedidos"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    <<: *servicio
+
+networks:
+  publica:
+  privada:
+    internal: true # sin salida a Internet ni acceso desde fuera
+
+volumes:
+  datos-usuarios:
+  datos-productos:
+  datos-pedidos:
